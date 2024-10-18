@@ -17,6 +17,8 @@ if __name__ == '__main__':
     parser.add_argument('--output_path', type=str, default=None)
     parser.add_argument('--interaction_type', type=str, default=None)
     parser.add_argument('--duplicate_removal', action='store_true')
+    parser.add_argument("--do_split", action='store_true', default=False)
+    parser.add_argument("--do_seq_rec", action='store_true', default=False)
 
     parser.add_argument('--item_feature_name', type=str, default='none')
 
@@ -38,12 +40,15 @@ if __name__ == '__main__':
         input_args.append(args.duplicate_removal)
     if dataset_class_name in multiple_item_features:
         input_args.append(args.item_feature_name)
+    if "MIMICIIIDrugDataset" == dataset_class_name:
+        input_args.append(args.do_split)
+        input_args.append(args.do_seq_rec)
+
     datasets = dataset_class(*input_args)
 
-    if args.convert_inter:
-        datasets.convert_inter()
     if args.convert_item:
         datasets.convert_item()
-
     if args.convert_user:
         datasets.convert_user()
+    if args.convert_inter:
+        datasets.convert_inter()

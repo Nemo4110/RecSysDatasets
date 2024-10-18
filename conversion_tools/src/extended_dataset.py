@@ -11,8 +11,13 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from collections import deque
 from src.base_dataset import BaseDataset
 from src.cosmetics import CosmeticsDataset
+
+
+MAX_ADMISSION_LENGTH = 20
+MAX_ITEM_LIST_LENGTH = 20
 
 
 class Music4AllOnion(BaseDataset):
@@ -5317,9 +5322,19 @@ class MINDSmallDevDataset(BaseDataset):
 
 
 class MIMICIIIDrugDataset(BaseDataset):
-    def __init__(self, input_path, output_path):
+    def __init__(self,
+        input_path,
+        output_path,
+        do_split: bool = True,
+        do_seq_rec: bool = False
+    ):
         super(MIMICIIIDrugDataset, self).__init__(input_path, output_path)
+
         self.dataset_name = 'mimic-iii-v1.4-drug-rec'
+        self.do_split = do_split  # 是否拆成训练、验证、测试3个.inter文件
+        self.do_seq_rec = do_seq_rec  # 是否做序列推荐（会生成）
+
+        self.tokenfields2mappedid = {}
 
         # input file
         self.inter_file = os.path.join(self.input_path, 'PRESCRIPTIONS_PREPROCESSED.csv.gz')
@@ -5331,8 +5346,8 @@ class MIMICIIIDrugDataset(BaseDataset):
 
         # selected feature fields
         self.inter_fields = {
-            0: 'HADM_ID:token',
-            1: 'NDC:token',
+            0: 'user_id:token',
+            1: 'item_id:token',
             2: 'DRUG_TYPE:token',
             3: 'PROD_STRENGTH:token',
             4: 'DOSE_VAL_RX:token',
@@ -5343,9 +5358,11 @@ class MIMICIIIDrugDataset(BaseDataset):
             9: 'TIMESTEP:float',
             10:'ROW_ID:float',
         }
+        if self.do_seq_rec:
+            self.inter_fields[11] = 'item_id_list:token_seq'
 
         self.item_fields = {
-            0: 'NDC:token',
+            0: 'item_id:token',
             1: 'DRUG_TYPE_MAIN_Proportion:float',
             2: 'DRUG_TYPE_BASE_Proportion:float',
             3: 'DRUG_TYPE_ADDITIVE_Proportion:float',
@@ -5357,7 +5374,7 @@ class MIMICIIIDrugDataset(BaseDataset):
         }
 
         self.user_fields = {
-            0: 'HADM_ID:token',
+            0: 'user_id:token',
             1: 'ADMISSION_TYPE:token',
             2: 'ADMISSION_LOCATION:token',
             3: 'DISCHARGE_LOCATION:token',
@@ -5443,6 +5460,44 @@ class MIMICIIIDrugDataset(BaseDataset):
             "TIMESTEP",
             "ROW_ID"
         ]
+        self.cols_to_rename = {
+            'HADM_ID':  'user_id',
+            'NDC':      'item_id',
+        }
+        self._load_user_item_data()
+
+    def _load_user_item_data(self):
+        df_admissions = pd.read_csv(self.user_file, index_col=0, dtype=self.field2dtype)
+        df_admissions = df_admissions[self.list_selected_user_columns]
+        df_admissions.sort_values(by='HADM_ID', inplace=True)
+        unique_hadm_id = df_admissions.HADM_ID.sort_values().unique()
+        self.tokenfields2mappedid['HADM_ID'] = pd.DataFrame(
+            data={
+                'HADM_ID': unique_hadm_id,
+                'mappedID': pd.RangeIndex(len(unique_hadm_id))
+            }
+        )
+        map_df = self.tokenfields2mappedid['HADM_ID']
+        map_s = pd.Series(map_df['mappedID'].values, index=map_df['HADM_ID'].values)
+        df_admissions['HADM_ID'] = df_admissions['HADM_ID'].map(map_s)
+        df_admissions.rename(columns=self.cols_to_rename, inplace=True)
+        self.df_admissions = df_admissions
+
+        df_drug_ndc_feat = pd.read_csv(self.item_file, index_col=0, dtype=self.field2dtype)
+        df_drug_ndc_feat = df_drug_ndc_feat[self.list_selected_item_columns]
+        df_drug_ndc_feat.sort_values(by='NDC', inplace=True)
+        unique_ndc_id = df_drug_ndc_feat.NDC.sort_values().unique()
+        self.tokenfields2mappedid['NDC'] = pd.DataFrame(
+            data={
+                'NDC': unique_ndc_id,
+                'mappedID': pd.RangeIndex(len(unique_ndc_id))
+            }
+        )
+        map_df = self.tokenfields2mappedid['NDC']
+        map_s = pd.Series(map_df['mappedID'].values, index=map_df['NDC'].values)
+        df_drug_ndc_feat['NDC'] = df_drug_ndc_feat['NDC'].map(map_s)
+        df_drug_ndc_feat.rename(columns=self.cols_to_rename, inplace=True)
+        self.df_drug_ndc_feat = df_drug_ndc_feat
 
     def load_inter_data(self):
         df_inter = pd.read_csv(self.inter_file, index_col=0, dtype=self.field2dtype)
@@ -5453,35 +5508,64 @@ class MIMICIIIDrugDataset(BaseDataset):
         return df_inter
 
     def load_item_data(self):
-        df_drug_ndc_feat = pd.read_csv(self.item_file, index_col=0, dtype=self.field2dtype)
-        df_drug_ndc_feat = df_drug_ndc_feat[self.list_selected_item_columns]
-        df_drug_ndc_feat.sort_values(by='NDC', inplace=True)
-        return df_drug_ndc_feat
+        return self.df_drug_ndc_feat
 
     def load_user_data(self):
-        df_admissions = pd.read_csv(self.user_file, index_col=0, dtype=self.field2dtype)
-        df_admissions = df_admissions[self.list_selected_user_columns]
-        df_admissions.sort_values(by='HADM_ID', inplace=True)
-        return df_admissions
+        return self.df_admissions
 
     def convert_inter(self):
+        output_inter_file = os.path.join(self.output_path, self.dataset_name)
         try:
             input_inter_data = self.load_inter_data()
-            gb_id = input_inter_data.groupby('HADM_ID')
-
-            # get train, valid, test split by hadm_id
+            # remap
+            for col, map_df in self.tokenfields2mappedid.items():
+                map_s = pd.Series(map_df['mappedID'].values, index=map_df[col].values)
+                input_inter_data[col] = input_inter_data[col].map(map_s)
             totol_adm = self._filter_out_adm_len_lt_2(input_inter_data)
-            adm_train_val, adm_test = train_test_split(totol_adm, test_size=0.1, random_state=10043)
-            adm_train, adm_val = train_test_split(adm_train_val, test_size=1. / 36, random_state=10043)
+            input_inter_data = input_inter_data.groupby('HADM_ID').filter(lambda x: x.HADM_ID.iloc[0] in set(totol_adm))
 
-            input_inter_data_train = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_train))
-            input_inter_data_valid = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_val))
-            input_inter_data_test = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_test))
+            if self.do_seq_rec:
+                collector = []
+                for id, group in tqdm(input_inter_data.groupby('HADM_ID')):
+                    group = group.sort_values(by=['TIMESTEP', 'ROW_ID'])
+                    history_item_list = []
+                    last_item = None
+                    history_deque = deque(maxlen=MAX_ITEM_LIST_LENGTH)
+                    for index, row in group.iterrows():
+                        if last_item is None:
+                            last_item = str(row['NDC'])
+                            history_deque.extend([last_item] * MAX_ITEM_LIST_LENGTH)
+                            # https://github.com/RUCAIBox/RecBole/issues/1445
+                        else:
+                            history_deque.append(last_item)
+                            last_item = str(row['NDC'])
+                        history_item_list.append(" ".join(list(history_deque)))
+                    df_hist = pd.DataFrame({'item_id_list': history_item_list})
+                    collector.append(pd.concat([group.reset_index(drop=True), df_hist.reset_index(drop=True)], axis=1))
 
-            output_inter_file = os.path.join(self.output_path, self.dataset_name)
-            self.convert(input_inter_data_train, self.inter_fields, output_inter_file + '.train.inter')
-            self.convert(input_inter_data_valid, self.inter_fields, output_inter_file + '.valid.inter')
-            self.convert(input_inter_data_test, self.inter_fields, output_inter_file + '.test.inter')
+                input_inter_data = pd.concat(collector, axis=0)
+
+            if self.do_split:
+                adm_train_val, adm_test = train_test_split(totol_adm, test_size=0.1, random_state=10043)
+                adm_train, adm_val = train_test_split(adm_train_val, test_size=1. / 36, random_state=10043)
+
+                # get train, valid, test split by hadm_id
+                gb_id = input_inter_data.groupby('HADM_ID')
+                input_inter_data_train = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_train))
+                input_inter_data_valid = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_val))
+                input_inter_data_test = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_test))
+
+                input_inter_data_train.rename(columns=self.cols_to_rename, inplace=True)
+                input_inter_data_valid.rename(columns=self.cols_to_rename, inplace=True)
+                input_inter_data_test.rename(columns=self.cols_to_rename, inplace=True)
+
+                self.convert(input_inter_data_train, self.inter_fields, output_inter_file + '.train.inter')
+                self.convert(input_inter_data_valid, self.inter_fields, output_inter_file + '.valid.inter')
+                self.convert(input_inter_data_test, self.inter_fields, output_inter_file + '.test.inter')
+            else:
+                input_inter_data.rename(columns=self.cols_to_rename, inplace=True)
+                self.convert(input_inter_data, self.inter_fields, output_inter_file + '.inter')
+
         except NotImplementedError:
             print('This dataset can\'t be converted to inter file\n')
 
