@@ -64,7 +64,12 @@ dataset2class = {
     'mind_small_train': 'MINDSmallTrainDataset',
     'mind_small_dev': 'MINDSmallDevDataset',
     'cosmetics': 'CosmeticsDataset',
-    'mimic-iii-v1.4-drug-rec': 'MIMICIIIDrugDataset'
+    'mimic-iii-v1.4-drug-rec': 'MIMICIIIDrugDataset',
+    'mimic-iii-v1.4-drug-seq-rec': 'MIMICIIIDrugDataset',
+    'mimic-iii-v1.4-drug-gnn-rec': 'MIMICIIIDrugDataset',
+    'mimic-iii-v1.4-labitem-rec': 'MIMICIIILabItemDataset',
+    'mimic-iii-v1.4-labitem-seq-rec': 'MIMICIIILabItemDataset',
+    'mimic-iii-v1.4-labitem-gnn-rec': 'MIMICIIILabItemDataset',
 }
 
 click_dataset = {
