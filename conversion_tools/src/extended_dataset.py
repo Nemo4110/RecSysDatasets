@@ -5806,3 +5806,258 @@ class MIMICIIILabItemDataset(BaseDataset):
         length_per_hadm_multidays = length_per_hadm[length_per_hadm.TIMESTEP > 1]
         adm_multidays = set(list(length_per_hadm_multidays.index))
         return list(adm_multidays)
+
+
+class MIMICIVDrugDataset(BaseDataset):
+    def __init__(self,
+        input_path,
+        output_path,
+        do_split: bool = True,
+        do_seq_rec: bool = False,
+        MAX_ITEM_LIST_LENGTH: int = 20,
+    ):
+        super(MIMICIVDrugDataset, self).__init__(input_path, output_path)
+        self.dataset_name = 'mimic-iv-v2.2-drug-rec'
+        self.do_split = do_split  # 是否拆成训练、验证、测试3个.inter文件
+        self.do_seq_rec = do_seq_rec  # 是否做序列推荐（会生成）
+        self.MAX_ITEM_LIST_LENGTH = MAX_ITEM_LIST_LENGTH
+
+        self.tokenfields2mappedid = {}
+
+        # input file
+        self.inter_file = os.path.join(self.input_path, 'PRESCRIPTIONS_PREPROCESSED.csv.gz')
+        self.item_file = os.path.join(self.input_path, 'DRUGS_NDC_FEAT.csv.gz')
+        self.user_file = os.path.join(self.input_path, 'ADMISSIONS_NEW.csv.gz')
+
+        # output file
+        self.output_inter_file, self.output_item_file, self.output_user_file = self.get_output_files()
+
+        # selected feature fields
+        self.inter_fields = {
+            0: 'user_id:token',
+            1: 'item_id:token',
+            2: 'DRUG_TYPE:token',
+            3: 'PROD_STRENGTH:token',
+            4: 'DOSE_VAL_RX:token',
+            5: 'DOSE_UNIT_RX:token',
+            6: 'FORM_VAL_DISP:token',
+            7: 'FORM_UNIT_DISP:token',
+            8: 'ROUTE:token',
+            9: 'TIMESTEP:float',
+            10:'ROW_ID:float',
+        }
+        if self.do_seq_rec:
+            self.inter_fields[11] = 'item_id_list:token_seq'
+
+        self.item_fields = {
+            0: 'item_id:token',
+            1: 'DRUG_TYPE_MAIN_Proportion:float',
+            2: 'DRUG_TYPE_BASE_Proportion:float',
+            3: 'DRUG_TYPE_ADDITIVE_Proportion:float',
+            4: 'FORM_UNIT_DISP_Freq_1:token',
+            5: 'FORM_UNIT_DISP_Freq_2:token',
+            6: 'FORM_UNIT_DISP_Freq_3:token',
+            7: 'FORM_UNIT_DISP_Freq_4:token',
+            8: 'FORM_UNIT_DISP_Freq_5:token',
+        }
+
+        self.user_fields = {
+            0: 'user_id:token',
+            1: 'ADMISSION_TYPE:token',
+            2: 'ADMISSION_LOCATION:token',
+            3: 'DISCHARGE_LOCATION:token',
+            4: 'INSURANCE:token',
+            5: 'LANGUAGE:token',
+            6: 'MARITAL_STATUS:token',
+            7: 'RACE:token',
+        }
+
+        self.field2dtype = {
+            "HADM_ID": 'int64',
+            "ITEMID":  'int64',
+
+            # df_admissions
+            'ADMISSION_TYPE':     'int64',
+            'ADMISSION_LOCATION': 'int64',
+            'DISCHARGE_LOCATION': 'int64',
+            'INSURANCE':          'int64',
+            'LANGUAGE':           'int64',
+            'MARITAL_STATUS':     'int64',
+            'RACE':               'int64',
+
+            # df_labitems
+            'LABEL':    'string',
+            'FLUID':    'int64',
+            'CATEGORY': 'int64',
+
+            # df_labevents
+            'CATAGORY':          'int64',
+            'VALUENUM_Z-SCORED': 'float64',
+            'TIMESTEP':          'int64',
+
+            # df_prescriptions
+            'DRUG':              'string',
+            'DRUG_NAME_POE':     'string',
+            'DRUG_NAME_GENERIC': 'string',
+            'FORMULARY_DRUG_CD': 'string',
+            'GSN':               'string',
+            'NDC':               'int64',
+            'DRUG_TYPE':         'int64',
+            'PROD_STRENGTH':     'int64',
+            'DOSE_VAL_RX':       'int64',
+            'DOSE_UNIT_RX':      'int64',
+            'FORM_VAL_DISP':     'int64',
+            'FORM_UNIT_DISP':    'int64',
+            'ROUTE':             'int64'
+        }
+
+        self.list_selected_user_columns = [
+            'HADM_ID',
+            'ADMISSION_TYPE',
+            'ADMISSION_LOCATION',
+            'DISCHARGE_LOCATION',
+            'INSURANCE',
+            'LANGUAGE',
+            'MARITAL_STATUS',
+            'RACE'
+        ]
+        self.list_selected_item_columns = [
+            "NDC",
+            "DRUG_TYPE_MAIN_Proportion",
+            "DRUG_TYPE_BASE_Proportion",
+            "DRUG_TYPE_ADDITIVE_Proportion",
+            "FORM_UNIT_DISP_Freq_1",
+            "FORM_UNIT_DISP_Freq_2",
+            "FORM_UNIT_DISP_Freq_3",
+            "FORM_UNIT_DISP_Freq_4",
+            "FORM_UNIT_DISP_Freq_5"
+        ]
+        self.list_selected_inter_columns = [
+            "HADM_ID",
+            "NDC",
+            "DRUG_TYPE",
+            "PROD_STRENGTH",
+            "DOSE_VAL_RX",
+            "DOSE_UNIT_RX",
+            "FORM_VAL_DISP",
+            "FORM_UNIT_DISP",
+            "ROUTE",
+            "TIMESTEP",
+            "ROW_ID"
+        ]
+        self.cols_to_rename = {
+            'HADM_ID':  'user_id',
+            'NDC':      'item_id',
+        }
+
+        self._load_user_item_data()
+
+    def _load_user_item_data(self):
+        df_admissions = pd.read_csv(self.user_file, index_col=0, dtype=self.field2dtype)
+        df_admissions = df_admissions[self.list_selected_user_columns]
+        df_admissions.sort_values(by='HADM_ID', inplace=True)
+        unique_hadm_id = df_admissions.HADM_ID.sort_values().unique()
+        self.tokenfields2mappedid['HADM_ID'] = pd.DataFrame(
+            data={
+                'HADM_ID': unique_hadm_id,
+                'mappedID': pd.RangeIndex(len(unique_hadm_id))
+            }
+        )
+        map_df = self.tokenfields2mappedid['HADM_ID']
+        map_s = pd.Series(map_df['mappedID'].values, index=map_df['HADM_ID'].values)
+        df_admissions['HADM_ID'] = df_admissions['HADM_ID'].map(map_s)
+        df_admissions.rename(columns=self.cols_to_rename, inplace=True)
+        self.df_admissions = df_admissions
+
+        df_drug_ndc_feat = pd.read_csv(self.item_file, index_col=0, dtype=self.field2dtype)
+        df_drug_ndc_feat = df_drug_ndc_feat[self.list_selected_item_columns]
+        df_drug_ndc_feat.sort_values(by='NDC', inplace=True)
+        unique_ndc_id = df_drug_ndc_feat.NDC.sort_values().unique()
+        self.tokenfields2mappedid['NDC'] = pd.DataFrame(
+            data={
+                'NDC': unique_ndc_id,
+                'mappedID': pd.RangeIndex(len(unique_ndc_id))
+            }
+        )
+        map_df = self.tokenfields2mappedid['NDC']
+        map_s = pd.Series(map_df['mappedID'].values, index=map_df['NDC'].values)
+        df_drug_ndc_feat['NDC'] = df_drug_ndc_feat['NDC'].map(map_s)
+        df_drug_ndc_feat.rename(columns=self.cols_to_rename, inplace=True)
+        self.df_drug_ndc_feat = df_drug_ndc_feat
+
+    def load_inter_data(self):
+        df_inter = pd.read_csv(self.inter_file, index_col=0, dtype=self.field2dtype)
+        df_inter['STARTTIME'] = pd.to_datetime(df_inter['STARTTIME'])
+        df_inter['STOPTIME'] = pd.to_datetime(df_inter['STOPTIME'])
+        df_inter.sort_values(by=['HADM_ID', 'TIMESTEP', 'ROW_ID'], inplace=True)
+        df_inter = df_inter[self.list_selected_inter_columns]
+        return df_inter
+
+    def load_item_data(self):
+        return self.df_drug_ndc_feat
+
+    def load_user_data(self):
+        return self.df_admissions
+
+    def convert_inter(self):
+        output_inter_file = os.path.join(self.output_path, self.dataset_name)
+        try:
+            input_inter_data = self.load_inter_data()
+            # remap
+            for col, map_df in self.tokenfields2mappedid.items():
+                map_s = pd.Series(map_df['mappedID'].values, index=map_df[col].values)
+                input_inter_data[col] = input_inter_data[col].map(map_s)
+            totol_adm = self._filter_out_adm_len_lt_2(input_inter_data)
+            input_inter_data = input_inter_data.groupby('HADM_ID').filter(lambda x: x.HADM_ID.iloc[0] in set(totol_adm))
+
+            if self.do_seq_rec:
+                collector = []
+                for id, group in tqdm(input_inter_data.groupby('HADM_ID')):
+                    group = group.sort_values(by=['TIMESTEP', 'ROW_ID'])
+                    history_item_list = []
+                    last_item = None
+                    history_deque = deque(maxlen=self.MAX_ITEM_LIST_LENGTH)
+                    for index, row in group.iterrows():
+                        if last_item is None:
+                            last_item = str(row['NDC'])
+                            history_deque.extend([last_item] * self.MAX_ITEM_LIST_LENGTH)
+                            # https://github.com/RUCAIBox/RecBole/issues/1445
+                        else:
+                            history_deque.append(last_item)
+                            last_item = str(row['NDC'])
+                        history_item_list.append(" ".join(list(history_deque)))
+                    df_hist = pd.DataFrame({'item_id_list': history_item_list})
+                    collector.append(pd.concat([group.reset_index(drop=True), df_hist.reset_index(drop=True)], axis=1))
+
+                input_inter_data = pd.concat(collector, axis=0)
+
+            if self.do_split:
+                adm_train_val, adm_test = train_test_split(totol_adm, test_size=0.1, random_state=10043)
+                adm_train, adm_val = train_test_split(adm_train_val, test_size=1. / 72, random_state=10043)
+
+                # get train, valid, test split by hadm_id
+                gb_id = input_inter_data.groupby('HADM_ID')
+                input_inter_data_train = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_train))
+                input_inter_data_valid = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_val))
+                input_inter_data_test = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_test))
+
+                input_inter_data_train.rename(columns=self.cols_to_rename, inplace=True)
+                input_inter_data_valid.rename(columns=self.cols_to_rename, inplace=True)
+                input_inter_data_test.rename(columns=self.cols_to_rename, inplace=True)
+
+                self.convert(input_inter_data_train, self.inter_fields, output_inter_file + '.train.inter')
+                self.convert(input_inter_data_valid, self.inter_fields, output_inter_file + '.valid.inter')
+                self.convert(input_inter_data_test, self.inter_fields, output_inter_file + '.test.inter')
+            else:
+                input_inter_data.rename(columns=self.cols_to_rename, inplace=True)
+                self.convert(input_inter_data, self.inter_fields, output_inter_file + '.inter')
+
+        except NotImplementedError:
+            print('This dataset can\'t be converted to inter file\n')
+
+    @staticmethod
+    def _filter_out_adm_len_lt_2(input_inter_data):
+        length_per_hadm = input_inter_data.groupby('HADM_ID')[['TIMESTEP']].nunique()
+        length_per_hadm_multidays = length_per_hadm[length_per_hadm.TIMESTEP > 1]
+        adm_multidays = set(list(length_per_hadm_multidays.index))
+        return list(adm_multidays)

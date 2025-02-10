@@ -70,6 +70,9 @@ dataset2class = {
     'mimic-iii-v1.4-labitem-rec': 'MIMICIIILabItemDataset',
     'mimic-iii-v1.4-labitem-seq-rec': 'MIMICIIILabItemDataset',
     'mimic-iii-v1.4-labitem-gnn-rec': 'MIMICIIILabItemDataset',
+    'mimic-iv-v2.2-drug-rec': 'MIMICIVDrugDataset',
+    'mimic-iv-v2.2-drug-seq-rec': 'MIMICIVDrugDataset',
+    'mimic-iv-v2.2-drug-gnn-rec': 'MIMICIVDrugDataset',
 }
 
 click_dataset = {
