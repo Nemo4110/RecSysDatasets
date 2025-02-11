@@ -5817,9 +5817,19 @@ class MIMICIVDrugDataset(BaseDataset):
         MAX_ITEM_LIST_LENGTH: int = 20,
     ):
         super(MIMICIVDrugDataset, self).__init__(input_path, output_path)
-        self.dataset_name = 'mimic-iv-v2.2-drug-rec'
         self.do_split = do_split  # 是否拆成训练、验证、测试3个.inter文件
         self.do_seq_rec = do_seq_rec  # 是否做序列推荐（会生成）
+
+        if do_seq_rec and do_split:
+            self.dataset_name = 'mimic-iv-v2.2-drug-seq-rec'
+        elif not do_seq_rec and not do_split:
+            self.dataset_name = 'mimic-iv-v2.2-drug-gnn-rec'
+        elif not do_seq_rec and do_split:
+            self.dataset_name = 'mimic-iv-v2.2-drug-rec'
+        else:
+            raise NotImplementedError
+        print('>>>' * 3 + self.dataset_name + '<<<' * 3)
+
         self.MAX_ITEM_LIST_LENGTH = MAX_ITEM_LIST_LENGTH
 
         self.tokenfields2mappedid = {}
@@ -6008,11 +6018,13 @@ class MIMICIVDrugDataset(BaseDataset):
                 map_s = pd.Series(map_df['mappedID'].values, index=map_df[col].values)
                 input_inter_data[col] = input_inter_data[col].map(map_s)
             totol_adm = self._filter_out_adm_len_lt_2(input_inter_data)
-            input_inter_data = input_inter_data.groupby('HADM_ID').filter(lambda x: x.HADM_ID.iloc[0] in set(totol_adm))
+
+            total_mask = input_inter_data['HADM_ID'].isin(set(totol_adm))
+            input_inter_data = input_inter_data[total_mask]
 
             if self.do_seq_rec:
                 collector = []
-                for id, group in tqdm(input_inter_data.groupby('HADM_ID')):
+                for id, group in tqdm(input_inter_data.groupby('HADM_ID'), desc="ADD SEQ"):
                     group = group.sort_values(by=['TIMESTEP', 'ROW_ID'])
                     history_item_list = []
                     last_item = None
@@ -6035,11 +6047,13 @@ class MIMICIVDrugDataset(BaseDataset):
                 adm_train_val, adm_test = train_test_split(totol_adm, test_size=0.1, random_state=10043)
                 adm_train, adm_val = train_test_split(adm_train_val, test_size=1. / 72, random_state=10043)
 
-                # get train, valid, test split by hadm_id
-                gb_id = input_inter_data.groupby('HADM_ID')
-                input_inter_data_train = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_train))
-                input_inter_data_valid = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_val))
-                input_inter_data_test = gb_id.filter(lambda x: x.HADM_ID.iloc[0] in set(adm_test))
+                # 使用isin()方法生成布尔掩码
+                train_mask = input_inter_data['HADM_ID'].isin(adm_train)
+                val_mask = input_inter_data['HADM_ID'].isin(adm_val)
+                test_mask = input_inter_data['HADM_ID'].isin(adm_test)
+                input_inter_data_train = input_inter_data[train_mask]
+                input_inter_data_valid = input_inter_data[val_mask]
+                input_inter_data_test = input_inter_data[test_mask]
 
                 input_inter_data_train.rename(columns=self.cols_to_rename, inplace=True)
                 input_inter_data_valid.rename(columns=self.cols_to_rename, inplace=True)

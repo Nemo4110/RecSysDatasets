@@ -44,7 +44,7 @@ if __name__ == '__main__':
         input_args.append(args.duplicate_removal)
     if dataset_class_name in multiple_item_features:
         input_args.append(args.item_feature_name)
-    if "MIMICIIIDrugDataset" == dataset_class_name or "MIMICIIILabItemDataset" == dataset_class_name:
+    if dataset_class_name in ["MIMICIIIDrugDataset", "MIMICIIILabItemDataset", "MIMICIVDrugDataset"]:
         input_args.append(args.do_split)
         input_args.append(args.do_seq_rec)
 
